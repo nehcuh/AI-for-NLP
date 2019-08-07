@@ -1,0 +1,380 @@
+#+TITLE: word2vec
+
+* Word2Vec
+** One-hot 向量
+
+*** 什么是 one-hot 向量
+
+为了将词表示成向量输入到神经网络，一个简单的办法是使用 one-hot 向量。 假设词典中不同字符的数量为 $N$
+（即词典大小 vocab_size），每个字符已经同一个从 0 到 $N−1$ 的连续整数值索引一一对应。如果一个字符的
+索引是整数 $i$ , 那么我们创建一个全 0 的长为 $N$ 的向量，并将其位置为 $i$ 的元素设成1。 该向量就是
+对原字符的 one-hot 向量。
+
+*** 创建 one-hot 向量
+
+#+BEGIN_SRC python
+from mxnet import nd
+
+# 词典大小
+vocab_size = 1024
+
+# 索引为 0 和 2 的 one-hot 向量，向量长度等于词典大小
+nd.one_hot(nd.array([0, 2]), vocab_size)
+#+END_SRC
+*** Sklearn 中的 One-hot Encoding
+
+#+BEGIN_QUOTE
+有如下三个特征属性：
+性别：["male"，"female"]
+地区：["Europe"，"US"，"Asia"]
+浏览器：["Firefox"，"Chrome"，"Safari"，"Internet Explorer"]
+#+END_QUOTE
+
+对于上述的问题，性别的属性是二维的，同理，地区是三维的，浏览器则是四维的，这样，我们可以采用 One-Hot
+编码的方式对上述的样本 “["male"，"US"，"Internet Explorer"]” 编码，“male”则对应着 [1，0]，
+同理“US”对应着 [0，1，0]， “Internet Explorer” 对应着[0,0,0,1]。 则完整的特征数字化的结果为：
+[1,0,0,1,0,0,0,0,1]。这样导致的一个结果就是数据会变得非常的稀疏。
+
+#+BEGIN_SRC python
+from sklearn import preprocessing
+
+enc = preprocessing.OneHotEncoder()
+enc.fit([[0,0,3],[1,1,0],[0,2,1],[1,0,2]])
+
+array = enc.transform([[0,1,3]]).toarray()
+
+print(array)
+#+END_SRC
+
+#+RESULTS:
+: array([[1., 0., 0., 1., 0., 0., 0., 0., 1.]])
+
+*** One-hot 向量优点
+1. 能够处理非连续型数值特征，即离散值
+2. 在一定程度上扩充了特征，譬如性别信息，经过 one-hot 编码，变成男或女两个特征
+*** One-hot 向量缺点
+
+1. 无法表示不同词之间的相似度，比较常用的比较不同词相似度的方式为余弦相似度
+
+   \begin{equation}
+     \frac{\boldsymbol{x}^{\top}\boldsymbol{y}}{\lVert\boldsymbol{x}\rVert\lVert\boldsymbol{y}\rVert}
+     \in[-1, 1]
+   \end{equation}
+
+2. 如果特征值数目比较多，则特征向量会非常大，且非常稀疏
+
+3. 不会保留词汇直接的顺序关系
+
+** 跳字模型 (skip-gram)
+
+跳字模型假设基于某个词来生成它在文本序列周围的词
+
+*** 举例
+
+#+BEGIN_QUOTE
+文本序列为 "the" "man" "loves" "his" "son", 以 "loves" 作为中心词，设背景窗口大小为 2, 跳字模型关心
+的是，给定中心词 "loves", 生成与它距离不超过 2 个词的背景词 "the" "man" "his" "son" 的条件概率，即
+\begin{equation}
+  P("the" "man" "his" "son"|"loves")
+\end{equation}
+假定给定中心词的情况下，背景词生成是独立的，那么上式可以改写为
+\begin{equation}
+  P("the"|"loves")\cdotP("man"|"loves")\cdotP("his"|"loves")\cdotP("son"|"loves")
+\end{equation}
+#+END_QUOTE
+
+[[file:word2vec/skip-gram.svg]]
+
+*** 表示
+
+1. 跳字模型中，每个词被表示为两个 $d$ 维向量，用来计算条件概率
+2. 假设某个词的索引为 $i$, 它为中心词时词向量表示为 $\boldsymbol{v}^i\in\mathbb{R}^d$ , 为背景词时，
+   词向量表示为 $\boldsymbol{u}^o\in\mathbb{R}^d$
+3. 给定中心词，生成背景词的条件概率可以通过对向量內积做 softmax 运算得到
+   \begin{equation}
+     P(w_{o}|w_{c}) = \frac{\exp(\boldsymbol{u}_{o}\boldsymbol{v}_{c})}
+     {\sum\limits_{i\in\mathcal{V}}\exp(\boldsymbol{u}_{i}^{\top}\boldsymbol{v}_{c})}
+   \end{equation}
+   其中， $\mathcal{V}=\{0, 1, \ldots, \lvert \mathcal{V}\rvert-1\}$
+4. 给定一个长度为 $T$ 的文本序列，设时间步 $t$ 的词为 $w^{(t)}$, 假设给定中心词的情况下背景词生成相
+   互独立，当背景窗口为 $m$ 时，跳字模型的似然函数即给定任一中心词生成所有背景词的概率
+   \begin{equation}
+     \prod_{t=1}^{T}\prod_{-m\leq j \leq m,j\neq 0}P(w^{{(t+j)}}|w^{t})
+   \end{equation}
+
+*** 训练
+
+1. 跳字模型的参数是每个词对应的 *中心词向量* 和 *背景词向量*
+2. 训练中通过最大化似然函数，等价于最小化以下损失函数
+   \begin{equation}
+     -\sum_{t=1}^{T}\sum_{-m\leq j \leq m,j\neq 0}\log P(w^{{(t+j)}}|w^{t})
+   \end{equation}
+3. 如果使用随机梯度下降，那么在每一次迭代里，随机采样一个较短的子序列来计算有关该子序列的损失，然后
+   计算梯度来更新模型参数
+4. 梯度计算的关键是条件概率的对数中心词向量和背景词向量的梯度，根据定义，有
+   \begin{equation}
+     \log P(w_{o}|w_{c}) = \boldsymbol{u}_{o}^{\top}\boldsymbol{v}_{c}-
+     \log\left(\sum_{i\in\mathcal{V}}\exp \boldsymbol{u}_{i}^{\top}\boldsymbol{v}_{c}\right)
+   \end{equation}
+   上式对于 $\boldsymbol{v}_c$ 的梯度为
+   \begin{aligned}
+     \frac{\partial P(w_o|w_c)}{\partial \boldsymbol{v}_c} &= \boldsymbol{u}_0 - \frac
+     {\sum_{j\in\mathcal{V}}\exp (\boldsymbol{u}_j^{\top}\boldsymbol{v}_c)\boldsymbol{u}_j}
+     {\sum_{i\in\mathcal{V}}\exp (\boldsymbol{u}_i^{\top}\boldsymbol{v}_c)}\\
+     &= \boldsymbol{u}_0 - \sum_{j\in\mathcal{V}}\left(\frac
+     {\exp (\boldsymbol{u}_j^{\top}\boldsymbol{v}_c)}
+     {\sum_{i\in\mathcal{V}}\exp (\boldsymbol{u}_i^{\top}\boldsymbol{v}_c)}\right)\boldsymbol{u}_j\\
+     &=\boldsymbol{u}_0 - \sum_{j\in\mathcal{V}}P(w_j|w_c)\boldsymbol{u}_j
+   \end{aligned}
+   即它的计算需要词典中所有词以 $w_c$ 为中心词的条件概率。
+5. 背景词梯度计算类似
+
+** 连续词袋模式 (CBOW)
+
+连续词袋模型类似跳字模型，不同的是，连续词袋模型假设基于某中心词在文本序列前后的背景词来生成该中心词。
+
+*** 举例
+
+在同样的文本 "the man loves his son" 里，以 "loves" 为中心词，且背景窗口大小为 2 时，连续词袋模型关
+心的是，给定背景词 "the" "man" "his" "son" 生成中心词 "loves" 的条件概率，也就是
+\begin{equation}
+  P("loves"|"the","man", "his", "son")
+\end{equation}
+
+因此连续词袋模型的背景词有多个，我们将这些背景词取平均，然后使用和跳词模型一样的方法来计算条件概率。
+
+*** 表示
+
+1. 设 $\boldsymbol{v}_i\in\mathbb{R}^d$ 和 $\boldsymbol{u}_i\in\mathbb{R}^d$ 分别表示词典中索引为
+   $i$ 的词作为背景词和中心词向量
+2. 设中心词 $w_c$ 在词典中索引为 $c$, 背景词 $w_{o_1}, \ldots, w_{o_{2m}}$ 在词典中索引为
+   $o_1,\ldots,o_{2m}$, 那么，给定背景词生成中心词的条件概率为
+   \begin{equation}
+     P(w_{c}|w_{o_{1}},\ldots,w_{o_{2m}}) = \frac
+     {\exp \left(\frac{1}{2m}
+         \boldsymbol{u}_{c}^{\top}
+         (\boldsymbol{v}_{o_{1}}+\ldots+\boldsymbol{v}_{o_{2m}})\right)}
+     {\sum\limits_{i\in \mathcal{V}}\exp \left(\frac{1}{2m}\boldsymbol{u}_{i}^{\top}
+       (\boldsymbol{v}_{o_{1}}+\ldots+\boldsymbol{v}_{o_{2m}})\right)}
+   \end{equation}
+   记 $\mathcal{W}_o=\{w_{o_1},\ldots,w_{o_{2m}}\}$, 且
+   $\bar{\boldsymbol{v}}_o=(\boldsymbol{v}_1+\ldots+\boldsymbol{v}_{2m})/2m$, 则上式可简写为
+   \begin{equation}
+     P(w_{c}|\mathcal{W}) = \frac
+     {\exp (
+         \boldsymbol{u}_{c}^{\top}\bar{\boldsymbol{v}}_{o})}
+     {\sum\limits_{i\in \mathcal{V}}\exp (\boldsymbol{u}_{i}^{\top}\bar{\boldsymbol{v}}_{o})}
+   \end{equation}
+3. 连续词袋模型的似然函数
+   \begin{equation}
+     \prod_{t=1}^{T}P(w^{(t)}|w^{(t-m)},\ldots,w^{(t-1)}, w^{(t+1)}, \ldots, w^{(t+m)})
+   \end{equation}
+
+*** 训练
+
+1. 连续词袋的最大似然估计等价于最小化损失函数
+
+   \begin{equation}
+     -\sum_{t=1}^T  \log P(w^{(t)} \mid  w^{(t-m)}, \ldots,  w^{(t-1)},  w^{(t+1)}, \ldots,  w^{(t+m)}).
+   \end{equation}
+2. 注意到
+\begin{equation}
+  \log\,P(w_c \mid \mathcal{W}_o) = \boldsymbol{u}_c^\top \bar{\boldsymbol{v}}_o - \log\,\left(\sum_{i \in \mathcal{V}} \exp\left(\boldsymbol{u}_i^\top \bar{\boldsymbol{v}}_o\right)\right).
+\end{equation}
+微分，有条件概率对数有关任一背景词向量 $\boldsymbol{v}_o_i (i=1,\ldots, 2m)$ 的梯度
+\begin{equation}
+\frac{\partial \log\, P(w_c \mid \mathcal{W}_o)}{\partial \boldsymbol{v}_{o_i}} = \frac{1}{2m} \left(\boldsymbol{u}_c - \sum_{j \in \mathcal{V}} \frac{\exp(\boldsymbol{u}_j^\top \bar{\boldsymbol{v}}_o)\boldsymbol{u}_j}{ \sum_{i \in \mathcal{V}} \text{exp}(\boldsymbol{u}_i^\top \bar{\boldsymbol{v}}_o)} \right) = \frac{1}{2m}\left(\boldsymbol{u}_c - \sum_{j \in \mathcal{V}} P(w_j \mid \mathcal{W}_o) \boldsymbol{u}_j \right).
+\end{equation}
+3. 其他词向量的梯度同理可得
+4. 我们一般使用连续词袋模型的背景词作为词的表征向量
+* 近似训练
+
+跳字模型在于使用 softmax 运算得到给定中心词 $w_c$ 来生成背景词 $w_o$ 的条件概率
+
+\begin{equation}
+  P(w_o \mid w_c) = \frac{\text{exp}(\boldsymbol{u}_o^\top \boldsymbol{v}_c)}{ \sum_{i \in \mathcal{V}} \text{exp}(\boldsymbol{u}_i^\top \boldsymbol{v}_c)}.
+\end{equation}
+
+该条件概率相应的对数损失为
+
+\begin{equation}
+  -\log P(w_o \mid w_c) =
+  -\boldsymbol{u}_o^\top \boldsymbol{v}_c + \log\left(\sum_{i \in \mathcal{V}} \text{exp}(\boldsymbol{u}_i^\top \boldsymbol{v}_c)\right).
+\end{equation}
+
+由于 softmax 运算考虑了背景词可能是词典 $\mathcal{V}$ 中的任一词，以上损失包含了词典大小数目的项的累
+加。无论是跳字模型还是连续词袋模型，由于条件概率使用了 softmax 运算，每一步的梯度计算开销都会非常大，
+为了降低计算复杂度，可以使用近似训练方法，负采样 (negative sampling) 或者 层序 softmax (hierarchical
+softmax).
+
+** 负采样
+
+负采样修改了原来的目标函数。给定中心词 $w_c$ 的一个背景窗口，我们把背景词 $w_o$ 出现在该背景窗口看做
+一个事件，并将该事件的概率计算为
+\begin{equation}
+  P(D=1|w_{c}, w_{o}) = \sigma(\boldsymbol{u}_{o}^{\top}\boldsymbol{v}_{c})
+\end{equation}
+其中 $\sigma$ 函数定义与 sigmoid 激活函数定义相同。
+
+给定一个长度为 $T$ 的文本序列，设时间步 $t$ 的词为 $w^{(t)}$ 且背景窗口大小为 $m$, 考虑最大化联合概
+率
+\begin{equation}
+  \prod\limits_{t=1}^{T}\prod\limits_{-m\leq j \leq m, j\neq 0}P(D=1|w^{(t)}, w^{(t+j)})
+\end{equation}
+以上模型只有当所有词向量相等且值为无穷大的时候，联合概率才被最大化为 1. 这样的词向量毫无意义。
+
+负采样通过采样并添加负类样本使目标函数更有意义。
+1. 设背景词 $w_o$ 出现在中心词 $w_c$ 的一个背景窗口为事件 $P$, 我们根据分布
+   $P(w)$ 采样 $K$ 个未出现在该背景窗口中的词，即噪声词。
+2. 设噪声词 $w_k (k=1,\ldots,K)$ 不出现在中心词 $w_c$ 的该背景窗口为事件 $N_k$.
+3. 假设同时含有正类样本和负类样本的事件 $P, N_1, \ldots, N_K$ 相互独立，负采样将以上需要最大化的仅考
+   虑正类样本的联合概率改写为:
+   \begin{equation}
+     \prod_{t=1}^{T} \prod_{-m \leq j \leq m,\ j \neq 0} P(w^{(t+j)} \mid w^{(t)}),
+   \end{equation}
+   其中条件概率被近似表示为
+   \begin{equation}
+     P(w^{(t+j)} \mid w^{(t)}) =P(D=1\mid w^{(t)}, w^{(t+j)})\prod_{k=1,\ w_k \sim P(w)}^K P(D=0\mid w^{(t)}, w_k).
+   \end{equation}
+4. 设文本序列中的时间步 $t$ 的词 $w^{(t)}$ 在词典中的索引为 $i_t$, 噪声词 $w_k$ 在词典中的索引为
+   $h_k$, 有关以上条件概率的对数损失为
+   \begin{equation}
+   \begin{split}\begin{aligned}
+   -\log P(w^{(t+j)} \mid w^{(t)})
+   =& -\log P(D=1\mid w^{(t)}, w^{(t+j)}) - \sum_{k=1,\ w_k \sim P(w)}^K \log P(D=0\mid w^{(t)}, w_k)\\
+   =&-  \log\, \sigma\left(\boldsymbol{u}_{i_{t+j}}^\top \boldsymbol{v}_{i_t}\right) - \sum_{k=1,\ w_k \sim P(w)}^K \log\left(1-\sigma\left(\boldsymbol{u}_{h_k}^\top \boldsymbol{v}_{i_t}\right)\right)\\
+   =&-  \log\, \sigma\left(\boldsymbol{u}_{i_{t+j}}^\top \boldsymbol{v}_{i_t}\right) - \sum_{k=1,\ w_k \sim P(w)}^K \log\sigma\left(-\boldsymbol{u}_{h_k}^\top \boldsymbol{v}_{i_t}\right).
+   \end{aligned}\end{split}
+   \end{equation}
+   现在，训练中的每一步梯度计算开销不再与词典大小相关，而与 $K$ 线性相关。当 $K$ 取较小的常数时，负
+   采样在每一步的梯度计算开销较小。
+
+** 层序 softmax
+
+层序 softmax 是另一种近似训练法。它使用了二叉树这一数据结构，树的每个叶节点代表词典中 $\mathcal{V}$
+中的每个词。
+
+[[file:word2vec/hi-softmax.svg]]
+
+
+假设 $L(w)$ 为从二叉树的根结点到词 $w$ 的叶结点的路径 (包括根结点和叶结点) 上的结点数。设 $n(w, j)$
+为该路径上第 $j$ 个结点，并设该结点的背景词向量为 $\boldsymbold{u}_{n(w,j)}$.
+
+在上图中， $L(w_3)=4$. 层序 softmax 将跳字模型中的条件概率近似表示为
+\begin{equation}
+  P(w_o \mid w_c) = \prod_{j=1}^{L(w_o)-1} \sigma\left( [\![  n(w_o, j+1) = \text{leftChild}(n(w_o,j)) ]\!] \cdot \boldsymbol{u}_{n(w_o,j)}^\top \boldsymbol{v}_c\right),
+\end{equation}
+其中， $\text{leftChild}(n)$ 是结点 $n$ 的左子结点：如果判断 $x$ 为真， $[\![x]\!]=1$; 反之，
+$[\![x]\!]=-1$.
+
+计算给定词 $w_c$ 生成词 $w_3$ 的条件概率，需要将 $w_c$ 的词向量 $\boldsymbol{v}_c$ 和根结点到 $w_3$
+路径上的非叶结点向量一一求內积。由于在二叉树中由根结点到叶结点 $w_3$ 路径上需要向左、向右再向左遍历，
+我们得到
+\begin{equation}
+  P(w_3 \mid w_c) = \sigma(\boldsymbol{u}_{n(w_3,1)}^\top \boldsymbol{v}_c) \cdot \sigma(-\boldsymbol{u}_{n(w_3,2)}^\top \boldsymbol{v}_c) \cdot \sigma(\boldsymbol{u}_{n(w_3,3)}^\top \boldsymbol{v}_c).
+\end{equation}
+由于 $\sigma(x)+\sigma(-x)=1$, 给定中心词 $w_c$ 生成词典 $\mathcal{V}$ 中任一词的条件概率之和为 1 这
+一条件也将满足
+\begin{equation}
+  \sum\limits_{w\in\mathcal{V}}P(w|w_{c}) = 1
+\end{equation}
+此外，由于 $L(w_o)-1$ 的数量级为 $\mathcal{O}(\text{log}_2\lvert \mathcal{V}\rvert)$, 当词典
+$\mathcal{V}$ 很大的时候，层序 softmax 在训练中每一步的梯度计算开销相比近似训练时大幅降低。
+* Word2Vec 实现
+
+导入相关的模块
+
+#+BEGIN_SRC python
+import collections
+import d2lzh as d2l
+import math
+from mxnet import autograd, gluon, nd
+from mxnet.gluon import data as gdata, loss as gloss, nn
+import random
+import sys
+import time
+import zipfile
+#+END_SRC
+
+** 处理数据集
+
+1. 导入 PTB (Penn Tree Bank),  PTB 是常用的小型语料库，采样自 《华尔街日报》 的文章，包括训练集、验
+   证集和测试集。
+
+   #+BEGIN_SRC python
+with zipfile.ZipFile("data/ptb.zip", "r") as zin:
+    zin.extractall("data/")
+
+with open("data/ptb/ptb.train.txt", "r") as f:
+    lines = f.readlines()
+    raw_dataset = [st.split() for st in lines]
+
+print("# sentences: %d"%len(raw_dataset))
+   #+END_SRC
+
+2. 建立词语索引
+
+   - 简单起见，仅保留数据集中至少出现 5 次的词
+      #+BEGIN_SRC python
+   counter = collections.Counter([tk for st in raw_dataset for tk in st])
+   counter = dict(filter(lambda x: x[1] >= 5, counter.items()))
+      #+END_SRC
+
+   - 将词映射到整数索引
+
+     #+BEGIN_SRC python
+idx_to_token = [tk for tk, _ in counter.items()]
+token_to_idx = {tk: idx for idx, tk in enumerate(idx_to_token)}
+dataset = [[token_to_idx[tk] for tk in st if tk in token_to_idx]
+           for st in raw_dataset]
+num_tokens = sum([len(st) for st in dataset])
+print("# tokens: %d" % num_tokens)
+     #+END_SRC
+
+3. 二次采样
+
+   #+BEGIN_QUOTE
+   文本数据中一般会出现一些高频词，如英文中的 ”the" "a" "in" 等，通常而言，在一个背景窗口中，一个词
+   (如 "chip") 和较低频词 (如 "microprocessor") 同时出现比和较高频词 (如 "the") 同时出现对训练词嵌入
+   模型更有益。因此，训练词嵌入模型时，可以对词进行二次采样。具体而言，数据集中每个被索引词 $w_i$ 将
+   有一定概率被丢弃，该丢弃概率为
+   \begin{equation}
+     P(w_{i}) = \max \left(1 - \sqrt{\frac{t}{f(w_{i})}}, 0\right).
+   \end{equation}
+   其中， $f(w_i)$ 是数据集中词 $w_i$ 的个数与总次数之比，常数 $t$ 是一个超参数 (实验中设置为
+   $10^{-4}$), 可见，只有当 $f(w_i) > t$ 的时候，我们才有可能在二次采样中丢弃词 $w_i$, 而且越高频的
+   词被丢弃的概率越大。
+   #+END_QUOTE
+
+   #+BEGIN_SRC python
+def discard(idx):
+    return random.uniform(0, 1) < 1 - math.sqrt(
+        1e-4 / counter[idx_to_token[idx]] * num_tokens
+    )
+
+subsampled_data = [[tk for tk in st if not discard(tk)] for st in dataset]
+print("# tokens: %d" % sum([len(st) for st in subsampled_dataset]))
+   #+END_SRC
+
+   #+BEGIN_SRC python
+def compare_counts(token):
+    return "# %s: before=%d, after=%d" % (token, sum(
+        [st.count(token_to_idx[token]) for st in dataset]),sum(
+            [st.count(token_to_idx[token]) for st in subsampled_dataset]
+        ))
+compare_counts("the")
+   #+END_SRC
+
+4. 提取中心词和背景词
+
+** 负采样
+** 读取数据
+** 跳字模型
+1. 嵌入层
+2. 小批量乘法
+3. 跳字模型前向计算
+** 训练模型
+1. 二元交叉熵损失函数
+2. 初始化模型参数
+3. 定义训练函数
+4. 应用词嵌入模型

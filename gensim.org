@@ -1,0 +1,336 @@
+#+TITLE: Gensim Tutorials
+
+* 词库和向量空间
+
+** 字符串转换为向量 (From Strings to Vectors)
+
+*** 实例
+
+   #+BEGIN_SRC python
+import logging
+logging.basicConfig(format="%(asctime)s : % (levelname)s : %(message)s", level=logging.INFO)
+documents = ["Human machine interface for lab abc computer applications",
+             "A survey of user opinion of computer system response time",
+             "The EPS user interface management system",
+             "System and human system engineering testing of EPS",
+             "Relation of user perceived response time to error measurement",
+             "The generation of random binary unordered trees",
+             "The intersection graph of paths in trees",
+             "Graph minors IV Widths of trees and well quasi ordering",
+             "Graph minors A survey"]
+   #+END_SRC
+
+*** 文档处理
+
+1. Tokenize 文档
+2. 移除常用词
+3. 移除只出现一次的单词
+
+   #+BEGIN_SRC python
+from pprint import pprint # pretty-printer
+from collections import defaultdict
+
+# remove common words and tokenize
+stoplist = set("for a of the and to in".split())
+texts = [
+    [word for word in document.lower().split() if word not in stoplist]
+    for document in documents
+]
+
+# remove words that appear only once
+frequency = defaultdict(int)
+for text in texts:
+    for token in text:
+        frequency[token] += 1
+
+texts = [
+    [token for token in text if frequency[token] > 1]
+    for text in texts
+]
+
+pprint(texts)
+   #+END_SRC
+
+*** 向量化处理
+
+1. 使用 =bag-of-words= 模型表示文档 (也可以使用其他表示方式)
+
+   #+BEGIN_QUOTE
+   使用 =bag-of-words= 模型时，每篇文档都由一个向量表示，相应向量中，每个元素表示一个 “问答对”，形式
+   如下：
+    "文档中相应词汇出现多少次? 1次。"
+   #+END_QUOTE
+
+2. 将文档转换为向量
+
+   =gensim= 可以将所有文档处理为词典， =gensim= 会遍历所有文档中所有的词汇，并给每个词汇唯一的标记
+    
+    #+BEGIN_SRC python
+ from gensim import corpora
+ dictionary = corpora.Dictionary(texts)
+ dictionary.save("/tmp/deerwester.dict") # store the dictionary, for future reference
+ print(dictionary)
+    #+END_SRC
+
+    #+RESULTS:
+    : 2019-08-03 12:28:49,819 : INFO : adding document #0 to Dictionary(0 unique tokens: [])
+    : 2019-08-03 12:28:49,819 : INFO : built Dictionary(12 unique tokens: ['computer', 'human', 'interface', 'response', 'survey']...) from 9 documents (total 29 corpus positions)
+    : <gensim.corpora.dictionary.Dictionary object at 0x1a15a64470>
+
+    #+BEGIN_SRC python
+print(dictionary.token2id)
+    #+END_SRC
+
+    #+RESULTS:
+    : {'computer': 0,
+    :  'human': 1,
+    :  'interface': 2,
+    :  'response': 3,
+    :  'survey': 4,
+    :  'system': 5,
+    :  'time': 6,
+    :  'user': 7,
+    :  'eps': 8,
+    :  'trees': 9,
+    :  'graph': 10,
+    :  'minors': 11}
+
+3. 测试
+
+   - 下面的示例中， "interaction" 在词袋模型中没有出现， "human" 出现了一次， "computer" 出现了两次，
+     因此输出为 [(0, 2), (1, 1)], 表示 0 对应的 "computer" 出现了 2 次， 1 对应的 "human" 出现了 1
+     次.
+
+     #+BEGIN_SRC python
+new_doc = "Human computer computer interaction"
+new_vec = dictionary.doc2bow(new_doc.lower().split())
+print(new_vec)
+     #+END_SRC
+
+     #+RESULTS:
+     : [(0, 3), (1, 1)]
+
+   - 处理所有文档
+
+     #+BEGIN_SRC python
+corpus = [dictionary.doc2bow(text) for text in texts]
+corpora.MmCorpus.serialize("/tmp/deerwester.mm", corpus) # store to disk, for later use
+print(corpus)
+     #+END_SRC
+
+** 词库流 -- 一次一个文档 (Corpus Streaming -- One Document at a Time)
+
+#+BEGIN_QUOTE
+当词库中文档非常多的时候，直接将文档存到 RAM 中是不现实的，相反，假设所有文档存在一个文件中，
+=Gensim= 每次只要求能够返回一个词库，能够表示一个文档。
+#+END_QUOTE
+
+#+BEGIN_SRC python
+class MyCorpus(object):
+    def __iter__(self):
+        for line in open("mycorpus.txt"):
+            # assume there's one document per line, tokens separated by whitespace
+            yield dictionary.doc2bow(line.lower().split())
+#+END_SRC
+
+- 内存友好的词库
+
+  #+BEGIN_SRC python
+corpus_memory_friendly = MyCorpus()
+for vector in corpus_memory_friendly:
+    print(vector)
+  #+END_SRC
+
+- 内存友好的字典
+
+  #+BEGIN_SRC python
+from six import iteritems
+# collect statistics about all tokens
+dictionary = corpora.Dictionary(line.lower().split() for line in open("mycorpus.txt"))
+# remove stop words and words that appear only once
+stop_ids = [
+    dictionary.token2id[stopword]
+    for stopword in stoplist
+    if stopword in dictionary.token2id
+]
+once_ids = [tokenid for tokenid, docfreq in iteritems(dictionary.dfs) if docfreq==1]
+dictionary.filter_tokens(stop_ids + once_ids) # remove stop words and words that appear only once
+dictionary.compactify() # remove gaps in id sequence after words that were removed
+print(dictionary)
+  #+END_SRC
+
+** 词库格式 (Corpus Formats)
+
+1. Matrix Market format
+2. SVMlight format
+3. Blei's LDA-c format
+4. GibbsLDA++ format
+
+   #+BEGIN_SRC python
+corpus = [[(1, 0.5)], []]
+# 存储
+corpora.MmCorpus.serialize("/tmp/corpus.mm", corpus)
+corpora.SvmLightCorpus.serialize("/tmp/corpus.svmlight", corpus)
+corpora.BleiCorpus.serialize("/tmp/corpus.lda-c", corpus)
+corpora.LowCorpus.serialize("/tmp/corpus.low", corpus)
+# 读取
+corpus = corpora.MmCorpus("/tmp/corpus.mm")
+print(list(corpus))
+
+   #+END_SRC
+** 与 Numpy 和 Scipy 兼容 (Compatibility with Numpy and SciPy)
+
+#+BEGIN_SRC python
+import gensim
+import numpy as np
+numpy_matrix = np.random.randint(10, size=[5, 2])
+corpus = gensim.matutils.Dense2Corpus(numpy_matrix)
+numpy_matrix = gensim.matutils.corpus2dense(corpus, num_terms=number_of_corpus_features)
+#+END_SRC
+
+#+BEGIN_SRC python
+>>> import scipy.sparse
+>>> scipy_sparse_matrix = scipy.sparse.random(5, 2)  # random sparse matrix as example
+>>> corpus = gensim.matutils.Sparse2Corpus(scipy_sparse_matrix)
+>>> scipy_csc_matrix = gensim.matutils.corpus2csc(corpus)
+#+END_SRC
+* 主题和转换 (Topics and Transformations)
+
+** 转换接口 (Transformation interface)
+
+1. 导入之前保存的词库
+
+   #+BEGIN_SRC python
+from gensim import corpora
+
+if (os.path.exists("/tmp/derwester.dict")):
+    dictionary = corpora.Dictionary.load("/tmp/deerwester.dict")
+    corpus = corpora.MmCorpus("/tmp/deerwester.mm")
+    print("Used files generated from first tutorial")
+else:
+    print("Please run first tutorial to generate data set")
+   #+END_SRC
+
+2. 创建转换模型 (Creating a transformation)
+
+   #+BEGIN_SRC python
+tfidf = models.TfidfModel(corpus) # step 1 -- initialize a model
+   #+END_SRC
+
+   - 使用之前处理得到的词库对转换模型进行初始化
+   - 不同的转换可能需要不同初始化参数
+   - 对于 Tfidf 模型， ”训练“ 只包含遍历提供的词库一遍，然后计算文档所有 feature 的频率
+   - 训练其他模型，譬如 Latent Semantic Ananlysis 或者 Latent Dirichlet Allocation, 会更复杂，相应的，
+     耗时也会更长
+
+3. 向量转换 (Transforming vectors)
+
+   #+BEGIN_QUOTE
+   =tfidf= 现在可以被认为是只读类，可以将任意旧的向量 (bag-of-words integer counts) 转换为新的表示
+   (Tfidf real-value weights)
+   #+END_QUOTE
+
+   - 测试一
+      #+BEGIN_SRC python
+   doc_bow = [(0, 1), (1, 1)]
+   print(tfidf[doc_bow]) # step 2 -- use the model to transform vectors
+      #+END_SRC
+   - 测试二
+      #+BEGIN_SRC python
+   corpus_tfidf = tfidf[corpus]
+   for doc in corpus_tfidf:
+       print(doc)
+      #+END_SRC
+
+    - 模型本地化存储与读取
+
+      #+BEGIN_SRC python
+lsi.save("/tmp/model.lsi") # same for tfidf, lda, ...
+lsi = models.LsiModel.load("/tmp/model.lsi")
+      #+END_SRC
+
+** 可用的转换 (Available transformations)
+
+- Term Frequency * Invers Document Frequency, Tf-idf
+  #+BEGIN_SRC python
+model = models.TfidfModel(corpus, normalize=True)
+  #+END_SRC
+- Latent Semantic Indexing, LSI (or sometimes LSA)
+  #+BEGIN_SRC python
+model = models.LsiModel(tfidf_corpus, id2word=dictionary, num_topics=300)
+  #+END_SRC
+  #+BEGIN_SRC python
+model.add_documents(another_tfidf_corpus) # now LSI has been trained on tfidf_corpus + another_tfidf_corpus
+lsi_vec = model[tfidf_vec]
+
+model.add_documents(more_documents) # tfidf_corpus + another_tfidf_corpus + more_documents
+lsi_vec = model[tfidf_vec]
+  #+END_SRC
+- Random Projections, RP
+  #+BEGIN_SRC python
+model = models.RpModel(tfidf_corpus, num_topics=500)
+  #+END_SRC
+- Latent Dirichlet Allocation, LDA
+  #+BEGIN_SRC python
+model = models.LdaModel(corpus, id2word=dictionary, num_topics=100)
+  #+END_SRC
+- Hierarchical Dirichlet Process, HDP
+  #+BEGIN_SRC python
+model = models.HdpModel(corpus, id2word=dictionary)
+  #+END_SRC
+* 相似度查询 (Similarity Queries)
+** 相似度接口 (Similarity Interface)
+
+1. 导入词库
+
+   #+BEGIN_SRC python
+from gensim import corpora
+dictionary = corpora.Dictionary.load("/tmp/deerwester.dict")
+corpus = corpora.MmCorpus("/tmp/deerwester.mm")
+print(corpus)
+   #+END_SRC
+
+2. 定义两维的 LSI 空间
+
+   #+BEGIN_SRC python
+from gensim import models
+lsi = models.LsiModel(corpus, id2word=dictionary, num_topics=2)
+   #+END_SRC
+
+3. 假设输入的是 "Human computer interaction", 我们希望输出的 9 个文档按照与这句话的相似度进行降序排
+   列，这里的相似度仅考虑语义上明显相近的文字，不考虑超链接，不考虑随机游走统计排序。
+
+   #+BEGIN_SRC python
+doc = "Human computer interaction"
+vec_bow = dictionary.doc2bow(doc.lower().split())
+vec_lsi = lsi[vec_bow] # convert the query to LSI space
+print(vec_lsi)
+   #+END_SRC
+
+4. 初始化查询结构
+
+   - 为了进行相似度查询，我们需要输入所有需要进行比较的文档，这些文档都需要进行转换，转换到 2 维的
+     LSI 空间。同时我们还需要给词库建立索引 (indexing)
+
+       #+BEGIN_SRC python
+    index = similarities.MatrixSimilarity(lsi[corpus]) # transform corpus to LSI space and index it
+       #+END_SRC
+
+       #+BEGIN_QUOTE
+       =similarities.MatrixSimilarity= 只有在将所有的向量都导入内存时才合适，如果内存太小，建议使用
+       =similarities.Similarity=
+       #+END_QUOTE
+
+   - 本地存储与导入 index 信息
+
+     #+BEGIN_SRC python
+index.save("/tmp/deerwester.index")
+index = similarities.MatrixSimilarity.load("/tmp/deerwesters.index")
+     #+END_SRC
+
+4. 查询 (Performing Queries)
+
+   #+BEGIN_SRC python
+simis = index[vec_lsi] # perform a similarity query against the corpus
+print(list(enumerate(sims))) # print(document_number, document_similarity) 2-tuples
+   #+END_SRC
